@@ -6,6 +6,7 @@
 
   // Temporary form values
   let tempGivenName = "";
+  let tempFamilyName = "";
   let tempGender = "";
   let tempBirthDate = "";
   let tempPhone = "";
@@ -15,23 +16,12 @@
 
   // Fetch list of patients from FHIR server
   async function listPatients() {
-    const response = await fetch(`${fhirServer}`);
-    const data = await response.json();
-
-    // Extract the resources (patients) from the FHIR server response
-    patients = data.entry.map(entry => entry.resource);
-
-    // Check if patients have given names and handle any missing data
-    patients.forEach(patient => {
-      if (!patient.name & !patient.name.length & !patient.name[0].given & !patient.name[0].given.length) {
-        patient.name = [{ given: ["Unknown"] }]; // Fallback to "Unknown" if no given name is present
-      }
-    });
+    await searchPatients();
   }
 
   // Add a new patient to the FHIR server
   async function addPatient() {
-    if (!tempGivenName || !tempGender || !tempBirthDate || !tempPhone) {
+    if (!tempGivenName || !tempFamilyName || !tempGender || !tempBirthDate || !tempPhone) {
       alert("Please fill all fields.");
       return;
     }
@@ -43,7 +33,7 @@
       },
       body: JSON.stringify({
         resourceType: "Patient",
-        name: [{ given: [tempGivenName] }],
+        name: [{ given: [tempGivenName], family: tempFamilyName }],
         gender: tempGender,
         birthDate: tempBirthDate,
         telecom: [{ system: "phone", value: tempPhone }],
@@ -53,7 +43,7 @@
     if (response.ok) {
       alert("Patient added successfully.");
       await listPatients();
-      tempGivenName = tempGender = tempBirthDate = tempPhone = ""; // Reset form
+      tempGivenName = tempFamilyName = tempGender = tempBirthDate = tempPhone = ""; // Reset form
     } else {
       alert("Failed to add patient.");
     }
@@ -62,6 +52,7 @@
   // Update an existing patient
   async function updatePatient() {
     selectedPatient.name[0].given[0] = tempGivenName;
+    selectedPatient.name[0].family = tempFamilyName;
     selectedPatient.gender = tempGender;
     selectedPatient.birthDate = tempBirthDate;
     selectedPatient.telecom[0].value = tempPhone;
@@ -78,7 +69,7 @@
       alert("Patient updated successfully.");
       await listPatients();
       selectedPatient = null; // Clear selection
-      tempGivenName = tempGender = tempBirthDate = tempPhone = ""; // Reset form
+      tempGivenName = tempFamilyName = tempGender = tempBirthDate = tempPhone = ""; // Reset form
     } else {
       alert("Failed to update patient.");
     }
@@ -88,6 +79,7 @@
   function editPatient(patient) {
     selectedPatient = patient;
     tempGivenName = patient.name[0]?.given[0] || "";
+    tempFamilyName = patient.name[0]?.family || "";
     tempGender = patient.gender || "";
     tempBirthDate = patient.birthDate || "";
     tempPhone = patient.telecom[0]?.value || "";
@@ -104,21 +96,31 @@
     let query = "";
 
     if (searchQuery) {
-      // Check if the search query looks like a phone number (contains only digits, spaces, or dashes)
       const isPhoneNumber = /^\d[\d-\s]+$/.test(searchQuery);
-
-      if (isPhoneNumber) {
-        // Search by phone number
-        query = `?telecom=${searchQuery}`;
-      } else {
-        // Search by given name
-        query = `?given=${searchQuery}`;
-      }
+      query = isPhoneNumber ? `telecom=${searchQuery}` : `name=${searchQuery}`;
     }
 
-    const response = await fetch(`${fhirServer}${query}`);
+    const offset = (currentPage - 1) * patientsPerPage;
+    query += `${query ? '&' : '?'}_count=${patientsPerPage}&_offset=${offset}&_total=accurate`;
+
+    const response = await fetch(`${fhirServer}${query ? '?' + query : ''}`);
     const data = await response.json();
     patients = data.entry ? data.entry.map(entry => entry.resource) : [];
+
+    // Calculate total pages using the total from the FHIR bundle
+    const total = data.total || 0;
+    totalPages = Math.ceil(total / patientsPerPage);
+  }
+
+  let currentPage = 1;
+  let totalPages = 1;
+  const patientsPerPage = 10;
+
+  function changePage(newPage) {
+    if (newPage >= 1 && newPage <= totalPages) {
+      currentPage = newPage;
+      searchPatients();
+    }
   }
 
   // Load patients on component mount
@@ -142,13 +144,14 @@
     </button>
   </div>
 
-  <!-- Patient List in Table Format (Only Given Names) -->
+  <!-- Patient List in Table Format -->
   <div>
     <h2 class="text-xl mb-4">Patients List</h2>
     <table class="min-w-full table-auto border-collapse border border-gray-400">
       <thead>
         <tr class="bg-gray-200">
           <th class="border border-gray-400 px-4 py-2">Given Name</th>
+          <th class="border border-gray-400 px-4 py-2">Family Name</th>
           <th class="border border-gray-400 px-4 py-2">Gender</th>
           <th class="border border-gray-400 px-4 py-2">Date of Birth</th>
           <th class="border border-gray-400 px-4 py-2">Actions</th>
@@ -158,6 +161,7 @@
         {#each patients as patient}
           <tr>
             <td class="border border-gray-400 px-4 py-2">{patient.name[0]?.given[0]}</td>
+            <td class="border border-gray-400 px-4 py-2">{patient.name[0]?.family}</td>
             <td class="border border-gray-400 px-4 py-2">{patient.gender}</td>
             <td class="border border-gray-400 px-4 py-2">{patient.birthDate}</td>
             <td class="border border-gray-400 px-4 py-2">
@@ -174,6 +178,25 @@
     </table>
   </div>
 
+  <!-- Pagination Component -->
+  <div class="mt-4 flex justify-center items-center">
+    <button
+      class="bg-blue-500 text-white p-2 rounded mr-2"
+      on:click={() => changePage(currentPage - 1)}
+      disabled={currentPage === 1}
+    >
+      Previous
+    </button>
+    <span class="mx-2">Page {currentPage} of {totalPages}</span>
+    <button
+      class="bg-blue-500 text-white p-2 rounded ml-2"
+      on:click={() => changePage(currentPage + 1)}
+      disabled={currentPage === totalPages}
+    >
+      Next
+    </button>
+  </div>
+
   <!-- Patient Form -->
   <div class="mt-8">
     <h2 class="text-xl mb-4">Add / Edit Patient</h2>
@@ -183,6 +206,12 @@
         class="border p-2 mb-2 w-full"
         bind:value={tempGivenName}
         placeholder="Given Name"
+      />
+      <input
+        type="text"
+        class="border p-2 mb-2 w-full"
+        bind:value={tempFamilyName}
+        placeholder="Family Name"
       />
       <input
         type="text"
@@ -207,7 +236,6 @@
     </form>
   </div>
 </div>
-
 
 
 
